@@ -79,16 +79,51 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not isinstance(claims, list) or not claims:
+            return report
+
+        observed = ctx.observed_text
+        kept_claims = []
+        abstained = False
+
+        for claim in claims:
+            text = claim.get("text", "")
+            if not text:
+                continue
+            # Claim có trong evidence -> giữ nguyên
+            if text in observed:
+                kept_claims.append(claim)
+                continue
+
+            # Thử tách câu ghép: tìm " và " nối hai đoạn
+            if " và " in text:
+                parts = text.split(" và ", 1)
+                for part in parts:
+                    part = part.strip()
+                    if part in observed:
+                        kept_claims.append({"text": part, "doc_id": claim.get("doc_id", "")})
+                if len([p for p in parts if p.strip() in observed]) == 2:
+                    abstained = True
+                    continue
+
+            # Không tách được -> bịa: bỏ
+            abstained = True
+
+        # Nếu không còn claim nào -> abstain hoàn toàn
+        if not kept_claims:
+            report["claims"] = []
+            report["abstain"] = True
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ để trả lời câu hỏi này."
+            return report
+
+        report["claims"] = kept_claims
+        if abstained:
+            report["abstain"] = True
+
+        # Cập nhật citations
+        cited = {c.get("doc_id", "") for c in kept_claims if c.get("doc_id")}
+        report["citations"] = sorted(cited)
+
+        return report

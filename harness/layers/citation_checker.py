@@ -68,16 +68,53 @@ class CitationChecker(Middleware):
     name = "citation_checker"
 
     def after_agent(self, ctx, report):
-        # TODO (§11): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; bỏ qua nếu rỗng hoặc ctx.corpus là None.
-        #  2. Với mỗi claim, gọi ctx.corpus.get(claim["doc_id"]).
-        #     Nếu tài liệu tồn tại VÀ claim["text"] khớp NGUYÊN VĂN một
-        #     DÒNG trong body của nó (không phải chỉ "nằm trong body")
-        #     -> trích dẫn đã đúng, giữ nguyên claim.
-        #  3. Nếu không: tìm trong ctx.corpus.docs tài liệu đầu tiên thoả
-        #     doc.body in ctx.observed_text  và  claim["text"] khớp
-        #     nguyên văn một DÒNG của doc.body -> đó là nguồn thật.
-        #     Đổi doc_id sang nó, GIỮ NGUYÊN text.
-        #  4. Không tìm được nguồn nào -> để `critic` xử lý, đừng bịa doc_id.
-        #  5. Cập nhật report["citations"] = danh sách doc_id đã sắp xếp.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not isinstance(claims, list) or not claims or ctx.corpus is None:
+            return report
+
+        kept_claims = []
+
+        for claim in claims:
+            text = claim.get("text", "")
+            if not text:
+                continue
+
+            doc_id = claim.get("doc_id", "")
+            original_doc = ctx.corpus.get(doc_id) if doc_id else None
+
+            # Kiểm tra doc_id hiện tại có đúng không
+            correct = False
+            if original_doc:
+                # Kiểm tra khớp nguyên văn một DÒNG trong body
+                for line in original_doc.body.splitlines():
+                    if text.strip() == line.strip():
+                        correct = True
+                        break
+
+            if correct:
+                kept_claims.append(claim)
+            else:
+                # Tìm tài liệu đúng trong corpus
+                found = False
+                for doc in ctx.corpus.docs:
+                    # Chỉ tài liệu đã quan sát mới hợp lệ
+                    if doc.body not in ctx.observed_text:
+                        continue
+                    # Kiểm tra khớp một dòng
+                    for line in doc.body.splitlines():
+                        if text.strip() == line.strip():
+                            kept_claims.append({"text": text, "doc_id": doc.doc_id})
+                            found = True
+                            break
+                    if found:
+                        break
+
+                if not found:
+                    kept_claims.append(claim)  # Để critic xử lý
+
+        # Cập nhật citations
+        cited = {c.get("doc_id", "") for c in kept_claims if c.get("doc_id")}
+        report["claims"] = kept_claims
+        report["citations"] = sorted(cited)
+
+        return report
